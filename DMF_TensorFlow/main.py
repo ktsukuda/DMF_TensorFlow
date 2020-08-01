@@ -8,10 +8,13 @@ import tensorflow.compat.v1 as tf
 tf.disable_v2_behavior()
 
 import data
+import evaluation
 from DMF import DMF
 
 
 def train(result_dir, model, data_splitter, train_data, validation_data, batch_size, config):
+    epoch_data = []
+    best_ndcg = 0
     with tf.Session() as sess:
         sess.run(tf.global_variables_initializer())
         for epoch in range(config.getint('MODEL', 'epoch')):
@@ -25,7 +28,12 @@ def train(result_dir, model, data_splitter, train_data, validation_data, batch_s
                 start += batch_size
                 total_loss += loss
                 pb.update(start // batch_size)
-            print('\n[Epoch {}] Loss = {:.2f}'.format(epoch, total_loss))
+            hit_ratio, ndcg = evaluation.evaluate(model, sess, validation_data, config.getint('EVALUATION', 'top_k'))
+            epoch_data.append({'epoch': epoch, 'loss': total_loss, 'HR': hit_ratio, 'NDCG': ndcg})
+            if ndcg > best_ndcg:
+                tf.train.Saver().save(sess, os.path.join(result_dir, 'model'))
+            print('\n[Epoch {}] Loss = {:.2f}, HR = {:.4f}, NDCG = {:.4f}'.format(epoch, total_loss, hit_ratio, ndcg))
+    return epoch_data
 
 
 def get_feed_dict(model, train_data, start, end):
@@ -34,6 +42,11 @@ def get_feed_dict(model, train_data, start, end):
     feed_dict[model.item] = train_data[start:end, 1]
     feed_dict[model.rating] = train_data[start:end, 2]
     return feed_dict
+
+
+def save_train_result(result_dir, epoch_data):
+    with open(os.path.join(result_dir, 'epoch_data.json'), 'w') as f:
+        json.dump(epoch_data, f, indent=4)
 
 
 def main():
@@ -54,7 +67,8 @@ def main():
             os.makedirs(result_dir, exist_ok=True)
             tf.reset_default_graph()
             model = DMF(data_splitter.n_user, data_splitter.n_item, rating_matrix, lr, config)
-            train(result_dir, model, data_splitter, train_data, validation_data, batch_size, config)
+            epoch_data = train(result_dir, model, data_splitter, train_data, validation_data, batch_size, config)
+            save_train_result(result_dir, epoch_data)
 
 
 if __name__ == "__main__":
