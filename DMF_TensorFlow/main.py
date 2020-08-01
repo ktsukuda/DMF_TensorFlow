@@ -12,7 +12,7 @@ import evaluation
 from DMF import DMF
 
 
-def train(result_dir, model, data_splitter, train_data, validation_data, batch_size, config):
+def train(result_dir, model, train_data, validation_data, batch_size, config):
     epoch_data = []
     best_ndcg = 0
     with tf.Session() as sess:
@@ -49,6 +49,26 @@ def save_train_result(result_dir, epoch_data):
         json.dump(epoch_data, f, indent=4)
 
 
+def find_best_model(config, n_user, n_item, rating_matrix):
+    best_model = None
+    best_model_dir = None
+    best_params = {}
+    best_ndcg = 0
+    for batch_size in map(int, config['MODEL']['batch_size'].split()):
+        for lr in map(float, config['MODEL']['lr'].split()):
+            result_dir = "data/train_result/batch_size_{}-lr_{}-epoch_{}-n_negative_{}-top_k_{}".format(
+                batch_size, lr, config['MODEL']['epoch'], config['MODEL']['n_negative'], config['EVALUATION']['top_k'])
+            with open(os.path.join(result_dir, 'epoch_data.json')) as f:
+                ndcg = max([d['NDCG'] for d in json.load(f)])
+                if ndcg > best_ndcg:
+                    best_ndcg = ndcg
+                    best_params = {'batch_size': batch_size, 'lr': lr}
+                    tf.reset_default_graph()
+                    best_model = DMF(n_user, n_item, rating_matrix, lr, config)
+                    best_model_dir = result_dir
+    return best_model, best_model_dir, best_params
+
+
 def main():
     config = configparser.ConfigParser()
     config.read('DMF_TensorFlow/config.ini')
@@ -67,8 +87,16 @@ def main():
             os.makedirs(result_dir, exist_ok=True)
             tf.reset_default_graph()
             model = DMF(data_splitter.n_user, data_splitter.n_item, rating_matrix, lr, config)
-            epoch_data = train(result_dir, model, data_splitter, train_data, validation_data, batch_size, config)
+            epoch_data = train(result_dir, model, train_data, validation_data, batch_size, config)
             save_train_result(result_dir, epoch_data)
+
+    best_model, best_model_dir, best_params = find_best_model(config, data_splitter.n_user, data_splitter.n_item, rating_matrix)
+    with tf.Session() as sess:
+        tf.train.Saver().restore(sess, os.path.join(best_model_dir, 'model'))
+        hit_ratio, ndcg = evaluation.evaluate(best_model, sess, test_data, config.getint('EVALUATION', 'top_k'))
+        print('---------------------------------\nBest result')
+        print('batch_size = {}, lr = {}'.format(best_params['batch_size'], best_params['lr']))
+        print('HR = {:.4f}, NDCG = {:.4f}'.format(hit_ratio, ndcg))
 
 
 if __name__ == "__main__":
